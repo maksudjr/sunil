@@ -72,31 +72,45 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<Customer | null>(null);
   const [onboardedUser, setOnboardedUser] = useState<{ name: string, mobile: string } | null>(null);
 
-  // Load data from LocalStorage
+  // Sync Services from Server
   useEffect(() => {
-    const savedQueue = localStorage.getItem(STORAGE_KEY);
-    const savedServices = localStorage.getItem(SERVICES_STORAGE_KEY);
-    const savedUser = localStorage.getItem(ONBOARD_STORAGE_KEY);
+    const fetchServices = async () => {
+      try {
+        const res = await fetch('/api/services');
+        const data = await res.json();
+        setServices(data);
+      } catch (e) {
+        console.error("Error fetching services:", e);
+      }
+    };
+    fetchServices();
+    const interval = setInterval(fetchServices, 5000); // Poll every 5s
+    return () => clearInterval(interval);
+  }, []);
 
-    if (savedQueue) {
-      try { setQueue(JSON.parse(savedQueue)); } catch (e) { console.error(e); }
-    }
-    if (savedServices) {
-      try { setServices(JSON.parse(savedServices)); } catch (e) { console.error(e); }
-    }
+  // Sync Queue from Server
+  useEffect(() => {
+    const fetchQueue = async () => {
+      try {
+        const res = await fetch('/api/queue');
+        const data = await res.json();
+        setQueue(data);
+      } catch (e) {
+        console.error("Error fetching queue:", e);
+      }
+    };
+    fetchQueue();
+    const interval = setInterval(fetchQueue, 3000); // Poll every 3s for live updates
+    return () => clearInterval(interval);
+  }, []);
+
+  // Load onboarded user from LocalStorage
+  useEffect(() => {
+    const savedUser = localStorage.getItem(ONBOARD_STORAGE_KEY);
     if (savedUser) {
       try { setOnboardedUser(JSON.parse(savedUser)); } catch (e) { console.error(e); }
     }
   }, []);
-
-  // Save data to LocalStorage
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
-  }, [queue]);
-
-  useEffect(() => {
-    localStorage.setItem(SERVICES_STORAGE_KEY, JSON.stringify(services));
-  }, [services]);
 
   useEffect(() => {
     if (onboardedUser) {
@@ -126,7 +140,7 @@ export default function App() {
 
   // --- Actions ---
 
-  const handleAddCustomer = (serviceId: string, transactionId: string) => {
+  const handleAddCustomer = async (serviceId: string, transactionId: string) => {
     if (!onboardedUser) return;
     if (waitingList.length >= 15) {
       alert("দুঃখিত, বর্তমানে ওয়েটিং লিস্ট পূর্ণ (সর্বোচ্চ ১৫ জন)। অনুগ্রহ করে কিছুক্ষণ পর চেষ্টা করুন।");
@@ -147,30 +161,71 @@ export default function App() {
       status: 'অপেক্ষায়',
       timestamp: Date.now()
     };
-    setQueue(prev => [...prev, newCustomer]);
-    setCurrentUser(newCustomer);
+
+    try {
+      await fetch('/api/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newCustomer)
+      });
+      setQueue(prev => [...prev, newCustomer]);
+      setCurrentUser(newCustomer);
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  const handleUpdateServicePrice = (id: string, newPrice: number) => {
-    setServices(prev => prev.map(s => s.id === id ? { ...s, price: newPrice } : s));
+  const handleUpdateServicePrice = async (id: string, newPrice: number) => {
+    try {
+      await fetch(`/api/services/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ price: newPrice })
+      });
+      setServices(prev => prev.map(s => s.id === id ? { ...s, price: newPrice } : s));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  const handleApprove = (id: string) => {
-    setQueue(prev => prev.map(c => 
-      c.id === id ? { ...c, status: 'অনুমোদিত', approvedAt: Date.now() } : c
-    ));
+  const handleApprove = async (id: string) => {
+    try {
+      await fetch(`/api/queue/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'অনুমোদিত', approvedAt: Date.now() })
+      });
+      setQueue(prev => prev.map(c => 
+        c.id === id ? { ...c, status: 'অনুমোদিত', approvedAt: Date.now() } : c
+      ));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  const handleRate = (id: string, rating: number) => {
-    setQueue(prev => prev.map(c => 
-      c.id === id ? { ...c, rating } : c
-    ));
+  const handleRate = async (id: string, rating: number) => {
+    try {
+      await fetch(`/api/queue/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rating })
+      });
+      setQueue(prev => prev.map(c => 
+        c.id === id ? { ...c, rating } : c
+      ));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
-  const handleMarkDone = (id: string) => {
-    setQueue(prev => prev.map(c => 
-      c.id === id ? { ...c, status: 'সম্পন্ন' } : c
-    ));
+  const handleMarkDone = async (id: string) => {
+    try {
+      // Delete after complete as requested
+      await fetch(`/api/queue/${id}`, { method: 'DELETE' });
+      setQueue(prev => prev.filter(c => c.id !== id));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const handleLogin = (user: string, pass: string) => {
@@ -703,7 +758,12 @@ function BookingForm({ services, onSubmit }: { services: Service[], onSubmit: (s
 
       <div className="p-4 bg-amber-500/5 rounded-xl border border-amber-500/10">
         <p className="text-xs text-amber-500/60 uppercase font-bold mb-2">পেমেন্ট ইনস্ট্রাকশন</p>
-        <p className="text-sm text-slate-300">বিকাশ/নগদ পার্সোনাল নম্বরে <span className="text-amber-400 font-bold">৳{selectedService?.price}</span> পাঠিয়ে ট্রানজেকশন আইডি নিচে দিন।</p>
+        <div className="text-sm text-slate-300 space-y-2">
+          <p>১. বিকাশে ঢুকে <span className="text-amber-400 font-bold">সেন্ড মানি</span> সিলেক্ট করুন।</p>
+          <p>২. <span className="text-amber-400 font-bold">014xxxxxxxxxx</span> নাম্বারে <span className="text-amber-400 font-bold">৳{selectedService?.price}</span> সেন্ট মানি করুন।</p>
+          <p>৩. রেফারেন্স অপশনে <span className="text-amber-400 font-bold">আপনার নাম</span> লিখুন।</p>
+          <p>৪. ট্রানজেকশন আইডি নিচে বসিয়ে সাবমিট করুন।</p>
+        </div>
       </div>
 
       <div>
