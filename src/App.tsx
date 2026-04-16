@@ -16,22 +16,6 @@ import {
   AlertCircle,
   MapPin
 } from 'lucide-react';
-import { 
-  db, 
-  auth, 
-  signInWithPopup, 
-  googleProvider, 
-  collection, 
-  doc, 
-  setDoc, 
-  updateDoc, 
-  onSnapshot, 
-  query, 
-  orderBy,
-  handleFirestoreError,
-  OperationType
-} from './firebase';
-import { onAuthStateChanged } from 'firebase/auth';
 
 // --- Types ---
 
@@ -87,67 +71,32 @@ export default function App() {
   const [isAdmin, setIsAdmin] = useState(false);
   const [currentUser, setCurrentUser] = useState<Customer | null>(null);
   const [onboardedUser, setOnboardedUser] = useState<{ name: string, mobile: string } | null>(null);
-  const [isAuthReady, setIsAuthReady] = useState(false);
 
-  // Auth state listener
+  // Load data from LocalStorage
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      if (user && user.email === 'maksudjr2020@gmail.com') {
-        setIsAdmin(true);
-      } else {
-        setIsAdmin(false);
-      }
-      setIsAuthReady(true);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Sync Services from Firestore
-  useEffect(() => {
-    const unsubscribe = onSnapshot(collection(db, 'services'), (snapshot) => {
-      if (snapshot.empty) {
-        // Only initialize services if the user is an admin
-        if (isAdmin) {
-          INITIAL_SERVICES.forEach(async (s) => {
-            try {
-              await setDoc(doc(db, 'services', s.id), s);
-            } catch (e) {
-              console.error("Error initializing services:", e);
-            }
-          });
-        }
-      } else {
-        const fetchedServices = snapshot.docs.map(doc => doc.data() as Service);
-        setServices(fetchedServices);
-      }
-    }, (error) => {
-      // Ignore permission errors for regular users during initial sync
-      if (error.code !== 'permission-denied') {
-        handleFirestoreError(error, OperationType.LIST, 'services');
-      }
-    });
-    return () => unsubscribe();
-  }, [isAdmin]);
-
-  // Sync Queue from Firestore
-  useEffect(() => {
-    const q = query(collection(db, 'queue'), orderBy('timestamp', 'asc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedQueue = snapshot.docs.map(doc => doc.data() as Customer);
-      setQueue(fetchedQueue);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'queue');
-    });
-    return () => unsubscribe();
-  }, []);
-
-  // Load onboarded user from LocalStorage
-  useEffect(() => {
+    const savedQueue = localStorage.getItem(STORAGE_KEY);
+    const savedServices = localStorage.getItem(SERVICES_STORAGE_KEY);
     const savedUser = localStorage.getItem(ONBOARD_STORAGE_KEY);
+
+    if (savedQueue) {
+      try { setQueue(JSON.parse(savedQueue)); } catch (e) { console.error(e); }
+    }
+    if (savedServices) {
+      try { setServices(JSON.parse(savedServices)); } catch (e) { console.error(e); }
+    }
     if (savedUser) {
       try { setOnboardedUser(JSON.parse(savedUser)); } catch (e) { console.error(e); }
     }
   }, []);
+
+  // Save data to LocalStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(queue));
+  }, [queue]);
+
+  useEffect(() => {
+    localStorage.setItem(SERVICES_STORAGE_KEY, JSON.stringify(services));
+  }, [services]);
 
   useEffect(() => {
     if (onboardedUser) {
@@ -177,7 +126,7 @@ export default function App() {
 
   // --- Actions ---
 
-  const handleAddCustomer = async (serviceId: string, transactionId: string) => {
+  const handleAddCustomer = (serviceId: string, transactionId: string) => {
     if (!onboardedUser) return;
     if (waitingList.length >= 15) {
       alert("দুঃখিত, বর্তমানে ওয়েটিং লিস্ট পূর্ণ (সর্বোচ্চ ১৫ জন)। অনুগ্রহ করে কিছুক্ষণ পর চেষ্টা করুন।");
@@ -187,9 +136,8 @@ export default function App() {
     const service = services.find(s => s.id === serviceId);
     if (!service) return;
 
-    const customerId = Math.random().toString(36).substr(2, 9);
     const newCustomer: Customer = {
-      id: customerId,
+      id: Math.random().toString(36).substr(2, 9),
       name: onboardedUser.name,
       mobile: onboardedUser.mobile,
       serviceId: service.id,
@@ -199,72 +147,43 @@ export default function App() {
       status: 'অপেক্ষায়',
       timestamp: Date.now()
     };
-
-    try {
-      await setDoc(doc(db, 'queue', customerId), newCustomer);
-      setCurrentUser(newCustomer);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, `queue/${customerId}`);
-    }
+    setQueue(prev => [...prev, newCustomer]);
+    setCurrentUser(newCustomer);
   };
 
-  const handleUpdateServicePrice = async (id: string, newPrice: number) => {
-    try {
-      await updateDoc(doc(db, 'services', id), { price: newPrice });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `services/${id}`);
-    }
+  const handleUpdateServicePrice = (id: string, newPrice: number) => {
+    setServices(prev => prev.map(s => s.id === id ? { ...s, price: newPrice } : s));
   };
 
-  const handleApprove = async (id: string) => {
-    try {
-      await updateDoc(doc(db, 'queue', id), { 
-        status: 'অনুমোদিত', 
-        approvedAt: Date.now() 
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `queue/${id}`);
-    }
+  const handleApprove = (id: string) => {
+    setQueue(prev => prev.map(c => 
+      c.id === id ? { ...c, status: 'অনুমোদিত', approvedAt: Date.now() } : c
+    ));
   };
 
-  const handleRate = async (id: string, rating: number) => {
-    try {
-      await updateDoc(doc(db, 'queue', id), { rating });
-      if (currentUser?.id === id) {
-        setCurrentUser(prev => prev ? { ...prev, rating } : null);
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `queue/${id}`);
-    }
+  const handleRate = (id: string, rating: number) => {
+    setQueue(prev => prev.map(c => 
+      c.id === id ? { ...c, rating } : c
+    ));
   };
 
-  const handleMarkDone = async (id: string) => {
-    try {
-      await updateDoc(doc(db, 'queue', id), { status: 'সম্পন্ন' });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `queue/${id}`);
-    }
+  const handleMarkDone = (id: string) => {
+    setQueue(prev => prev.map(c => 
+      c.id === id ? { ...c, status: 'সম্পন্ন' } : c
+    ));
   };
 
-  const handleLogin = async (user: string, pass: string) => {
-    // For simplicity, we still use the hardcoded admin login for UI access,
-    // but the actual security is handled by Firebase Auth for the owner email.
+  const handleLogin = (user: string, pass: string) => {
     if (user === ADMIN_CREDENTIALS.username && pass === ADMIN_CREDENTIALS.password) {
-      try {
-        await signInWithPopup(auth, googleProvider);
-        // The onAuthStateChanged will handle isAdmin state
-        setView('admin-dashboard');
-        return true;
-      } catch (error) {
-        console.error("Login failed:", error);
-        return false;
-      }
+      setIsAdmin(true);
+      setView('admin-dashboard');
+      return true;
     }
     return false;
   };
 
-  const handleLogout = async () => {
-    await auth.signOut();
+  const handleLogout = () => {
+    setIsAdmin(false);
     setView('user');
   };
 
@@ -855,14 +774,14 @@ function EstimatedWait({ startTime, position }: { startTime: number, position: n
   );
 }
 
-function AdminLoginForm({ onLogin }: { onLogin: (u: string, p: string) => Promise<boolean> }) {
+function AdminLoginForm({ onLogin }: { onLogin: (u: string, p: string) => boolean }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    const success = await onLogin(username, password);
+    const success = onLogin(username, password);
     if (!success) {
       setError(true);
       setTimeout(() => setError(false), 3000);
